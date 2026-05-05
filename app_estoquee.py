@@ -9,7 +9,8 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=0#gid=0"
 
 def carregar_dados():
-    return conn.read(spreadsheet=URL_PLANILHA, ttl="0")
+    # Carrega a aba principal (Sheet1)
+    return conn.read(spreadsheet=URL_PLANILHA, worksheet="Sheet1", ttl="0")
 
 def registrar_historico(acao, produto, qtd):
     try:
@@ -37,7 +38,29 @@ if not st.session_state.logado:
 
 # --- SISTEMA ---
 df = carregar_dados()
+
+# --- CÁLCULO DO RESUMO FINANCEIRO ---
+# Garante que as colunas sejam números para evitar erros
+df['Quantidade'] = pd.to_numeric(df['Quantidade'], errors='coerce').fillna(0)
+df['Valor Unit'] = pd.to_numeric(df['Valor Unit'], errors='coerce').fillna(0)
+df['Valor Total'] = df['Quantidade'] * df['Valor Unit']
+
+valor_total_estoque = df['Valor Total'].sum()
+qtd_total_itens = df['Quantidade'].sum()
+produtos_criticos = len(df[df['Quantidade'] < 50])
+
 st.title("📦 Gestão de Estoque Completa")
+
+# --- EXIBIÇÃO DOS INDICADORES NO TOPO ---
+col_f1, col_f2, col_f3 = st.columns(3)
+with col_f1:
+    st.metric("💰 Valor Total Investido", f"R$ {valor_total_estoque:,.2f}")
+with col_f2:
+    st.metric("📦 Total de Itens", f"{int(qtd_total_itens)} un")
+with col_f3:
+    st.metric("⚠️ Alertas Críticos (<50)", f"{produtos_criticos} itens")
+
+st.markdown("---")
 
 menu = st.sidebar.selectbox("Menu", ["Ver Estoque", "Entrada", "Saída", "Editar/Excluir", "Histórico"])
 
@@ -45,15 +68,18 @@ if menu == "Ver Estoque":
     st.subheader("📋 Inventário Atual")
     
     busca = st.text_input("🔍 Buscar produto pelo nome...").upper()
-    df_filtrado = df[df['Produto'].str.contains(busca, na=False)] if busca else df
+    # Filtra os dados com base na busca
+    if busca:
+        df_filtrado = df[df['Produto'].astype(str).str.contains(busca, na=False)]
+    else:
+        df_filtrado = df
         
-    # --- FUNÇÃO DE ALERTA VISUAL (< 50 UNIDADES) ---
     def destacar_estoque_baixo(row):
         color = 'background-color: #ffcccc' if row['Quantidade'] < 50 else ''
         return [color] * len(row)
 
     if not df_filtrado.empty:
-        st.dataframe(df_filtrado.style.apply(destarcar_estoque_baixo, axis=1), use_container_width=True)
+        st.dataframe(df_filtrado.style.apply(destacar_estoque_baixo, axis=1), use_container_width=True)
         st.info("💡 Linhas em vermelho indicam estoque abaixo de 50 unidades.")
     else:
         st.info("Nenhum produto encontrado.")
@@ -62,15 +88,20 @@ elif menu == "Entrada":
     with st.form("entrada"):
         nome = st.text_input("Produto").upper()
         qtd = st.number_input("Quantidade", min_value=1)
+        valor_u = st.number_input("Valor Unitário", min_value=0.0, format="%.2f")
         btn = st.form_submit_button("Salvar")
         if btn:
             idx = df[df['Produto'] == nome].index
             if not idx.empty:
                 df.loc[idx, 'Quantidade'] += qtd
+                df.loc[idx, 'Valor Unit'] = valor_u
             else:
-                novo = pd.DataFrame([{"SKU": f"PROD-{len(df)+1:03d}", "Produto": nome, "Quantidade": qtd, "Valor Unit": 0, "NF": "-"}])
+                novo = pd.DataFrame([{"SKU": f"PROD-{len(df)+1:03d}", "Produto": nome, "Quantidade": qtd, "Valor Unit": valor_u, "NF": "-"}])
                 df = pd.concat([df, novo], ignore_index=True)
-            conn.update(spreadsheet=URL_PLANILHA, data=df)
+            
+            # Remove a coluna temporária de cálculo antes de salvar na planilha
+            df_salvar = df.drop(columns=['Valor Total'])
+            conn.update(spreadsheet=URL_PLANILHA, worksheet="Sheet1", data=df_salvar)
             registrar_historico("ENTRADA", nome, qtd)
             st.success("Estoque Atualizado!")
             st.rerun()
@@ -88,7 +119,8 @@ elif menu == "Saída":
             idx = df[df['Produto'] == produto_sel].index
             if df.loc[idx, 'Quantidade'].values >= qtd_s:
                 df.loc[idx, 'Quantidade'] -= qtd_s
-                conn.update(spreadsheet=URL_PLANILHA, data=df)
+                df_salvar = df.drop(columns=['Valor Total'])
+                conn.update(spreadsheet=URL_PLANILHA, worksheet="Sheet1", data=df_salvar)
                 registrar_historico("SAÍDA", produto_sel, qtd_s)
                 st.warning("Saída registrada!")
                 st.rerun()
@@ -109,21 +141,26 @@ elif menu == "Editar/Excluir":
         dados_prod = df[df['Produto'] == prod_edit]
         
         if not dados_prod.empty:
-            valor_qtd = int(dados_prod['Quantidade'].values)
+            valor_qtd = int(dados_prod['Quantidade'].values[0])
+            valor_uni = float(dados_prod['Valor Unit'].values[0])
+            
             col1, col2 = st.columns(2)
             with col1:
                 novo_nome = st.text_input("Novo Nome", value=prod_edit)
                 nova_qtd = st.number_input("Nova Quantidade", value=valor_qtd)
+                novo_val = st.number_input("Novo Valor Unit", value=valor_uni)
                 if st.button("Salvar Edição"):
                     idx = df[df['Produto'] == prod_edit].index
-                    df.loc[idx, ['Produto', 'Quantidade']] = [novo_nome.upper(), nova_qtd]
-                    conn.update(spreadsheet=URL_PLANILHA, data=df)
+                    df.loc[idx, ['Produto', 'Quantidade', 'Valor Unit']] = [novo_nome.upper(), nova_qtd, novo_val]
+                    df_salvar = df.drop(columns=['Valor Total'])
+                    conn.update(spreadsheet=URL_PLANILHA, worksheet="Sheet1", data=df_salvar)
                     st.success("Alterado!")
                     st.rerun()
             with col2:
                 if st.button("🗑️ EXCLUIR", type="primary"):
                     df = df[df['Produto'] != prod_edit]
-                    conn.update(spreadsheet=URL_PLANILHA, data=df)
+                    df_salvar = df.drop(columns=['Valor Total'])
+                    conn.update(spreadsheet=URL_PLANILHA, worksheet="Sheet1", data=df_salvar)
                     st.error(f"{prod_edit} removido.")
                     st.rerun()
 
