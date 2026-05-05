@@ -8,7 +8,7 @@ st.set_page_config(page_title="Estoque Nuvem Pro", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def carregar_dados():
-  https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=0#gid=0
+  'https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=0#gid=0'
     url = "SEU_LINK_DA_PLANILHA_AQUI"
     return conn.read(spreadsheet=url, ttl="0")
 
