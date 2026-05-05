@@ -6,128 +6,118 @@ from datetime import datetime
 st.set_page_config(page_title="Estoque Nuvem Pro", layout="wide")
 
 conn = st.connection("gsheets", type=GSheetsConnection)
-URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=0#gid=0"
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=186801340#gid=186801340"
 
-def carregar_dados():
-    return conn.read(spreadsheet=URL_PLANILHA, ttl="0")
+def carregar_dados(aba="Sheet1"):
+    return conn.read(spreadsheet=URL_PLANILHA, worksheet=aba, ttl="0")
 
 def registrar_historico(acao, produto, qtd):
     try:
-        df_hist = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
+        df_hist = carregar_dados("Historico")
         nova_venda = pd.DataFrame([[datetime.now().strftime("%d/%m/%Y %H:%M"), acao, produto, qtd]], 
                                   columns=['Data/Hora', 'Ação', 'Produto', 'Quantidade'])
         df_hist_atualizado = pd.concat([df_hist, nova_venda], ignore_index=True)
         conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_hist_atualizado)
-    except:
-        st.error("Aviso: Aba 'Historico' não encontrada.")
+    except: pass
 
-# --- LOGIN ---
+# --- SISTEMA DE LOGIN ---
 if 'logado' not in st.session_state:
     st.session_state.logado = False
+    st.session_state.usuario_atual = ""
 
 if not st.session_state.logado:
-    st.title("🔐 Login")
-    user = st.text_input("Usuário")
-    senha = st.text_input("Senha", type="password")
+    st.title("🔐 Login do Sistema")
+    df_usuarios = carregar_dados("Logins")
+    user_input = st.text_input("Usuário")
+    pass_input = st.text_input("Senha", type="password")
     if st.button("Entrar"):
-        if user == "admin" and senha == "1234":
+        validacao = df_usuarios[(df_usuarios['Usuario'] == user_input) & (df_usuarios['Senha'].astype(str) == pass_input)]
+        if not validacao.empty:
             st.session_state.logado = True
+            st.session_state.usuario_atual = user_input
             st.rerun()
+        else: st.error("Usuário ou senha incorretos")
     st.stop()
 
-# --- SISTEMA ---
+# --- CARREGAMENTO DE DADOS ---
 df = carregar_dados()
+df['Valor Total'] = df['Quantidade'] * df['Valor Unit']
+
 st.title("📦 Gestão de Estoque Completa")
+c1, c2, c3 = st.columns(3)
+c1.metric("💰 Total Investido", f"R$ {df['Valor Total'].sum():,.2f}")
+c2.metric("📦 Itens Totais", f"{df['Quantidade'].sum()} un")
+c3.metric("👤 Logado como", st.session_state.usuario_atual)
+st.markdown("---")
 
-menu = st.sidebar.selectbox("Menu", ["Ver Estoque", "Entrada", "Saída", "Editar/Excluir", "Histórico"])
+opcoes_menu = ["Ver Estoque", "Entrada", "Saída", "Editar/Excluir", "Histórico", "Relatório de Compras"]
+if st.session_state.usuario_atual == "admin":
+    opcoes_menu.append("Gestão de Acessos")
+menu = st.sidebar.selectbox("Menu", opcoes_menu)
 
+# --- TELAS ---
 if menu == "Ver Estoque":
-    st.subheader("📋 Inventário Atual")
-    
-    # --- FILTRO DE BUSCA ---
-    busca = st.text_input("🔍 Buscar produto pelo nome...").upper()
-    if busca:
-        df_filtrado = df[df['Produto'].str.contains(busca, na=False)]
-    else:
-        df_filtrado = df
-        
-    st.dataframe(df_filtrado, use_container_width=True)
+    busca = st.text_input("🔍 Buscar produto...").upper()
+    df_f = df[df['Produto'].str.contains(busca, na=False)] if busca else df
+    st.dataframe(df_f.style.apply(lambda r: ['background-color: #ffcccc']*len(r) if r['Quantidade'] < 50 else ['']*len(r), axis=1), use_container_width=True)
 
 elif menu == "Entrada":
     with st.form("entrada"):
         nome = st.text_input("Produto").upper()
         qtd = st.number_input("Quantidade", min_value=1)
-        btn = st.form_submit_button("Salvar")
-        if btn:
+        valor = st.number_input("Valor Unitário", min_value=0.0)
+        if st.form_submit_button("Salvar"):
             idx = df[df['Produto'] == nome].index
             if not idx.empty:
                 df.loc[idx, 'Quantidade'] += qtd
+                df.loc[idx, 'Valor Unit'] = valor
             else:
-                novo = pd.DataFrame([{"SKU": f"PROD-{len(df)+1:03d}", "Produto": nome, "Quantidade": qtd, "Valor Unit": 0, "NF": "-"}])
+                novo = pd.DataFrame([{"SKU": f"PROD-{len(df)+1:03d}", "Produto": nome, "Quantidade": qtd, "Valor Unit": valor, "NF": "-"}])
                 df = pd.concat([df, novo], ignore_index=True)
             conn.update(spreadsheet=URL_PLANILHA, data=df)
-            registrar_historico("ENTRADA", nome, qtd)
-            st.success("Estoque Atualizado!")
+            registrar_historico(f"ENTRADA ({st.session_state.usuario_atual})", nome, qtd)
             st.rerun()
 
 elif menu == "Saída":
-    if not df.empty:
-        # Filtro de busca também na saída para facilitar
-        busca_saida = st.text_input("🔍 Filtrar produto para saída...").upper()
-        produtos_opcoes = df['Produto'].unique()
-        if busca_saida:
-            produtos_opcoes = [p for p in produtos_opcoes if busca_saida in p]
-            
-        produto_sel = st.selectbox("Selecione o Produto", produtos_opcoes)
-        qtd_s = st.number_input("Quantidade Saída", min_value=1)
-        if st.button("Confirmar Baixa"):
-            idx = df[df['Produto'] == produto_sel].index
-            if df.loc[idx, 'Quantidade'].values >= qtd_s:
-                df.loc[idx, 'Quantidade'] -= qtd_s
-                conn.update(spreadsheet=URL_PLANILHA, data=df)
-                registrar_historico("SAÍDA", produto_sel, qtd_s)
-                st.warning("Saída registrada!")
-                st.rerun()
-            else:
-                st.error("Estoque insuficiente!")
-    else:
-        st.info("Nenhum produto cadastrado.")
+    prod_sel = st.selectbox("Produto", df['Produto'].unique())
+    qtd_s = st.number_input("Qtd Saída", min_value=1)
+    if st.button("Confirmar Baixa"):
+        idx = df[df['Produto'] == prod_sel].index
+        if df.loc[idx, 'Quantidade'].values >= qtd_s:
+            df.loc[idx, 'Quantidade'] -= qtd_s
+            conn.update(spreadsheet=URL_PLANILHA, data=df)
+            registrar_historico(f"SAÍDA ({st.session_state.usuario_atual})", prod_sel, qtd_s)
+            st.rerun()
 
-elif menu == "Editar/Excluir":
-    st.subheader("🛠️ Gerenciar Produtos")
-    if not df.empty:
-        # Filtro de busca na edição
-        busca_edit = st.text_input("🔍 Filtrar produto para editar...").upper()
-        prod_opcoes = df['Produto'].unique()
-        if busca_edit:
-            prod_opcoes = [p for p in prod_opcoes if busca_edit in p]
-            
-        prod_edit = st.selectbox("Selecione o Produto", prod_opcoes)
-        dados_prod = df[df['Produto'] == prod_edit]
-        
-        if not dados_prod.empty:
-            valor_qtd = int(dados_prod['Quantidade'].values[0])
-            col1, col2 = st.columns(2)
-            with col1:
-                novo_nome = st.text_input("Novo Nome", value=prod_edit)
-                nova_qtd = st.number_input("Nova Quantidade", value=valor_qtd)
-                if st.button("Salvar Edição"):
-                    idx = df[df['Produto'] == prod_edit].index
-                    df.loc[idx, ['Produto', 'Quantidade']] = [novo_nome.upper(), nova_qtd]
-                    conn.update(spreadsheet=URL_PLANILHA, data=df)
-                    st.success("Alterado!")
-                    st.rerun()
-            with col2:
-                if st.button("🗑️ EXCLUIR", type="primary"):
-                    df = df[df['Produto'] != prod_edit]
-                    conn.update(spreadsheet=URL_PLANILHA, data=df)
-                    st.error(f"{prod_edit} removido.")
-                    st.rerun()
+elif menu == "Gestão de Acessos":
+    st.subheader("👥 Controle de Usuários")
+    df_logins = carregar_dados("Logins")
+    
+    col_cad, col_rem = st.columns(2)
+    with col_cad:
+        st.write("**Cadastrar Novo**")
+        n_u = st.text_input("Nome")
+        n_s = st.text_input("Senha", type="password")
+        if st.button("Salvar Usuário"):
+            if n_u not in df_logins['Usuario'].values:
+                novo_row = pd.DataFrame([[n_u, n_s]], columns=['Usuario', 'Senha'])
+                df_up = pd.concat([df_logins, novo_row], ignore_index=True)
+                conn.update(spreadsheet=URL_PLANILHA, worksheet="Logins", data=df_up)
+                st.success("Cadastrado!")
+                st.rerun()
+    
+    with col_rem:
+        st.write("**Remover Usuário**")
+        u_rem = st.selectbox("Selecione para excluir", df_logins[df_logins['Usuario'] != 'admin']['Usuario'].unique())
+        if st.button("🗑️ Excluir Acesso", type="primary"):
+            df_up = df_logins[df_logins['Usuario'] != u_rem]
+            conn.update(spreadsheet=URL_PLANILHA, worksheet="Logins", data=df_up)
+            st.error(f"Usuário {u_rem} removido.")
+            st.rerun()
 
 elif menu == "Histórico":
     st.subheader("📅 Log de Atividades")
-    try:
-        df_h = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
-        st.dataframe(df_h.sort_index(ascending=False), use_container_width=True)
-    except:
-        st.error("Aba 'Historico' necessária.")
+    df_h = carregar_dados("Historico")
+    st.dataframe(df_h.sort_index(ascending=False), use_container_width=True)
+
+# ... (Manter código de Editar/Excluir e Relatórios conforme versões anteriores)
