@@ -8,7 +8,7 @@ st.set_page_config(page_title="Estoque Nuvem Pro", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- CONFIGURAÇÃO DA PLANILHA ---
-ID_PLANILHA = "1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo"
+URL_BASE = f"https://google.com{ID_PLANILHA}/edit#gid="
 # CORREÇÃO AQUI: Adicionado /://google.com
 URL_BASE = f"https://://google.com{ID_PLANILHA}/edit#gid="
 
