@@ -6,7 +6,7 @@ from datetime import datetime
 st.set_page_config(page_title="Estoque Nuvem Pro", layout="wide")
 
 conn = st.connection("gsheets", type=GSheetsConnection)
-URL_PLANILHA = "https://google.com"
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=1378246990#gid=1378246990"
 
 def carregar_dados():
     return conn.read(spreadsheet=URL_PLANILHA, ttl="0")
