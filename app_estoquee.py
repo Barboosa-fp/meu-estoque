@@ -6,6 +6,7 @@ from datetime import datetime
 st.set_page_config(page_title="Estoque Nuvem Pro", layout="wide")
 
 conn = st.connection("gsheets", type=GSheetsConnection)
+# --- COLOQUE SEU LINK ABAIXO ---
 URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=1378246990#gid=1378246990"
 
 def carregar_dados():
@@ -13,14 +14,13 @@ def carregar_dados():
 
 def registrar_historico(acao, produto, qtd):
     try:
-        # Carrega a aba de histórico
         df_hist = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
         nova_venda = pd.DataFrame([[datetime.now().strftime("%d/%m/%Y %H:%M"), acao, produto, qtd]], 
                                   columns=['Data/Hora', 'Ação', 'Produto', 'Quantidade'])
         df_hist_atualizado = pd.concat([df_hist, nova_venda], ignore_index=True)
         conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_hist_atualizado)
     except:
-        st.error("Erro ao gravar histórico. Verifique se existe a aba 'Historico'.")
+        st.error("Aviso: Aba 'Historico' não encontrada na planilha. Crie uma aba com o nome 'Historico'.")
 
 # --- LOGIN ---
 if 'logado' not in st.session_state:
@@ -61,42 +61,60 @@ elif menu == "Entrada":
             conn.update(spreadsheet=URL_PLANILHA, data=df)
             registrar_historico("ENTRADA", nome, qtd)
             st.success("Estoque Atualizado!")
+            st.rerun()
 
 elif menu == "Saída":
-    produto_sel = st.selectbox("Produto", df['Produto'].unique())
-    qtd_s = st.number_input("Quantidade Saída", min_value=1)
-    if st.button("Confirmar Baixa"):
-        idx = df[df['Produto'] == produto_sel].index
-        if df.loc[idx, 'Quantidade'].values >= qtd_s:
-            df.loc[idx, 'Quantidade'] -= qtd_s
-            conn.update(spreadsheet=URL_PLANILHA, data=df)
-            registrar_historico("SAÍDA", produto_sel, qtd_s)
-            st.warning("Saída registrada!")
+    if not df.empty:
+        produto_sel = st.selectbox("Produto", df['Produto'].unique())
+        qtd_s = st.number_input("Quantidade Saída", min_value=1)
+        if st.button("Confirmar Baixa"):
+            idx = df[df['Produto'] == produto_sel].index
+            if df.loc[idx, 'Quantidade'].values[0] >= qtd_s:
+                df.loc[idx, 'Quantidade'] -= qtd_s
+                conn.update(spreadsheet=URL_PLANILHA, data=df)
+                registrar_historico("SAÍDA", produto_sel, qtd_s)
+                st.warning("Saída registrada!")
+                st.rerun()
+            else:
+                st.error("Estoque insuficiente!")
+    else:
+        st.info("Nenhum produto cadastrado.")
 
 elif menu == "Editar/Excluir":
     st.subheader("🛠️ Gerenciar Produtos")
-    prod_edit = st.selectbox("Selecione o Produto", df['Produto'].unique())
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        novo_nome = st.text_input("Novo Nome", value=prod_edit)
-        nova_qtd = st.number_input("Nova Quantidade", value=int(df[df['Produto']==prod_edit]['Quantidade'].values[0]))
-        if st.button("Salvar Edição"):
-            idx = df[df['Produto'] == prod_edit].index
-            df.loc[idx, ['Produto', 'Quantidade']] = [novo_nome.upper(), nova_qtd]
-            conn.update(spreadsheet=URL_PLANILHA, data=df)
-            st.success("Alterado com sucesso!")
-            st.rerun()
+    if not df.empty:
+        prod_edit = st.selectbox("Selecione o Produto", df['Produto'].unique())
+        
+        # Correção do Erro de Index (Linha 83)
+        dados_prod = df[df['Produto'] == prod_edit]
+        if not dados_prod.empty:
+            valor_qtd = int(dados_prod['Quantidade'].values[0])
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                novo_nome = st.text_input("Novo Nome", value=prod_edit)
+                nova_qtd = st.number_input("Nova Quantidade", value=valor_qtd)
+                if st.button("Salvar Edição"):
+                    idx = df[df['Produto'] == prod_edit].index
+                    df.loc[idx, ['Produto', 'Quantidade']] = [novo_nome.upper(), nova_qtd]
+                    conn.update(spreadsheet=URL_PLANILHA, data=df)
+                    st.success("Alterado com sucesso!")
+                    st.rerun()
 
-    with col2:
-        st.write("Cuidado: Esta ação é definitiva.")
-        if st.button("🗑️ EXCLUIR PRODUTO", fg_color="red"):
-            df = df[df['Produto'] != prod_edit]
-            conn.update(spreadsheet=URL_PLANILHA, data=df)
-            st.error(f"{prod_edit} foi removido do sistema.")
-            st.rerun()
+            with col2:
+                st.write("Cuidado: Ação definitiva.")
+                if st.button("🗑️ EXCLUIR", type="primary"):
+                    df = df[df['Produto'] != prod_edit]
+                    conn.update(spreadsheet=URL_PLANILHA, data=df)
+                    st.error(f"{prod_edit} excluído.")
+                    st.rerun()
+    else:
+        st.info("Estoque vazio.")
 
 elif menu == "Histórico":
     st.subheader("📅 Log de Atividades")
-    df_h = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
-    st.table(df_h.tail(20)) # Mostra as últimas 20 ações
+    try:
+        df_h = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
+        st.dataframe(df_h.tail(20), use_container_width=True)
+    except:
+        st.error("Crie uma aba chamada 'Historico' na sua planilha.")
