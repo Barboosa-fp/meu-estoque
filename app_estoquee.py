@@ -3,119 +3,134 @@ import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 
-# 1. CONFIGURAÇÃO DA PÁGINA
 st.set_page_config(page_title="Estoque Nuvem Pro", layout="wide")
 
-# 2. CONEXÃO E LINK DA PLANILHA (AJUSTADO)
 conn = st.connection("gsheets", type=GSheetsConnection)
-# Substitua o ID abaixo pelo seu ID da planilha se for diferente
-ID_PLANILHA = "1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo"
-URL_PLANILHA = f"https://google.com{ID_PLANILHA}/edit#gid=0"
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=0#gid=0"
 
-def carregar_dados(aba="Sheet1"):
-    return conn.read(spreadsheet=URL_PLANILHA, worksheet=aba, ttl="0")
+def carregar_dados():
+    return conn.read(spreadsheet=URL_PLANILHA, ttl="0")
 
 def registrar_historico(acao, produto, qtd):
     try:
-        df_hist = carregar_dados("Historico")
+        df_hist = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
         nova_venda = pd.DataFrame([[datetime.now().strftime("%d/%m/%Y %H:%M"), acao, produto, qtd]], 
                                   columns=['Data/Hora', 'Ação', 'Produto', 'Quantidade'])
         df_hist_atualizado = pd.concat([df_hist, nova_venda], ignore_index=True)
         conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_hist_atualizado)
     except:
-        pass
+        st.error("Aviso: Aba 'Historico' não encontrada.")
 
-# --- 3. CARREGAMENTO E DASHBOARD ---
-try:
-    # Lendo a aba principal (Certifique-se que o nome é Sheet1)
-    df = carregar_dados("Sheet1")
+# --- LOGIN ---
+if 'logado' not in st.session_state:
+    st.session_state.logado = False
+
+if not st.session_state.logado:
+    st.title("🔐 Login")
+    user = st.text_input("Usuário")
+    senha = st.text_input("Senha", type="password")
+    if st.button("Entrar"):
+        if user == "admin" and senha == "1234":
+            st.session_state.logado = True
+            st.rerun()
+    st.stop()
+
+# --- SISTEMA ---
+df = carregar_dados()
+st.title("📦 Gestão de Estoque Completa")
+
+menu = st.sidebar.selectbox("Menu", ["Ver Estoque", "Entrada", "Saída", "Editar/Excluir", "Histórico"])
+
+if menu == "Ver Estoque":
+    st.subheader("📋 Inventário Atual")
     
-    # Garantindo que os dados são números para não dar erro no cálculo
-    df['Quantidade'] = pd.to_numeric(df['Quantidade'], errors='coerce').fillna(0)
-    df['Valor Unit'] = pd.to_numeric(df['Valor Unit'], errors='coerce').fillna(0)
-    df['Valor Total'] = df['Quantidade'] * df['Valor Unit']
-
-    st.title("📦 Gestão de Estoque Completa")
-
-    # Dashboard Financeiro
-    col_f1, col_f2, col_f3 = st.columns(3)
-    col_f1.metric("💰 Total Investido", f"R$ {df['Valor Total'].sum():,.2f}")
-    col_f2.metric("📦 Itens em Estoque", f"{int(df['Quantidade'].sum())} un")
-    col_f3.metric("⚠️ Alertas Críticos (<50)", len(df[df['Quantidade'] < 50]))
-
-    st.markdown("---")
-
-    # Menu Lateral
-    menu = st.sidebar.selectbox("Menu", ["Ver Estoque", "Entrada", "Saída", "Editar/Excluir", "Histórico", "Relatório de Compras"])
-
-    if menu == "Ver Estoque":
-        st.subheader("📋 Inventário Atual")
-        busca = st.text_input("🔍 Buscar produto...").upper()
-        df_filtrado = df[df['Produto'].astype(str).str.contains(busca, na=False)] if busca else df
+    busca = st.text_input("🔍 Buscar produto pelo nome...").upper()
+    df_filtrado = df[df['Produto'].str.contains(busca, na=False)] if busca else df
         
-        def destacar_baixo(row):
-            return ['background-color: #ffcccc'] * len(row) if row['Quantidade'] < 50 else [''] * len(row)
+    # --- FUNÇÃO DE ALERTA VISUAL (< 50 UNIDADES) ---
+    def destacar_estoque_baixo(row):
+        color = 'background-color: #ffcccc' if row['Quantidade'] < 50 else ''
+        return [color] * len(row)
 
-        st.dataframe(df_filtrado.style.apply(destacar_baixo, axis=1), use_container_width=True)
+    if not df_filtrado.empty:
+        st.dataframe(df_filtrado.style.apply(destarcar_estoque_baixo, axis=1), use_container_width=True)
+        st.info("💡 Linhas em vermelho indicam estoque abaixo de 50 unidades.")
+    else:
+        st.info("Nenhum produto encontrado.")
 
-    elif menu == "Entrada":
-        with st.form("entrada"):
-            nome = st.text_input("Produto").upper()
-            qtd = st.number_input("Quantidade", min_value=1)
-            valor = st.number_input("Preço de Custo (Unidade)", min_value=0.0)
-            if st.form_submit_button("Salvar"):
-                idx = df[df['Produto'] == nome].index
-                if not idx.empty:
-                    df.loc[idx, 'Quantidade'] += qtd
-                    df.loc[idx, 'Valor Unit'] = valor
-                else:
-                    novo = pd.DataFrame([{"SKU": f"PROD-{len(df)+1:03d}", "Produto": nome, "Quantidade": qtd, "Valor Unit": valor, "NF": "-"}])
-                    df = pd.concat([df, novo], ignore_index=True)
-                conn.update(spreadsheet=URL_PLANILHA, worksheet="Sheet1", data=df)
-                registrar_historico("ENTRADA", nome, qtd)
-                st.success("Estoque Atualizado!")
+elif menu == "Entrada":
+    with st.form("entrada"):
+        nome = st.text_input("Produto").upper()
+        qtd = st.number_input("Quantidade", min_value=1)
+        btn = st.form_submit_button("Salvar")
+        if btn:
+            idx = df[df['Produto'] == nome].index
+            if not idx.empty:
+                df.loc[idx, 'Quantidade'] += qtd
+            else:
+                novo = pd.DataFrame([{"SKU": f"PROD-{len(df)+1:03d}", "Produto": nome, "Quantidade": qtd, "Valor Unit": 0, "NF": "-"}])
+                df = pd.concat([df, novo], ignore_index=True)
+            conn.update(spreadsheet=URL_PLANILHA, data=df)
+            registrar_historico("ENTRADA", nome, qtd)
+            st.success("Estoque Atualizado!")
+            st.rerun()
+
+elif menu == "Saída":
+    if not df.empty:
+        busca_saida = st.text_input("🔍 Filtrar produto para saída...").upper()
+        produtos_opcoes = df['Produto'].unique()
+        if busca_saida:
+            produtos_opcoes = [p for p in produtos_opcoes if busca_saida in p]
+            
+        produto_sel = st.selectbox("Selecione o Produto", produtos_opcoes)
+        qtd_s = st.number_input("Quantidade Saída", min_value=1)
+        if st.button("Confirmar Baixa"):
+            idx = df[df['Produto'] == produto_sel].index
+            if df.loc[idx, 'Quantidade'].values >= qtd_s:
+                df.loc[idx, 'Quantidade'] -= qtd_s
+                conn.update(spreadsheet=URL_PLANILHA, data=df)
+                registrar_historico("SAÍDA", produto_sel, qtd_s)
+                st.warning("Saída registrada!")
                 st.rerun()
+            else:
+                st.error("Estoque insuficiente!")
+    else:
+        st.info("Nenhum produto cadastrado.")
 
-    elif menu == "Saída":
-        if not df.empty:
-            prod_sel = st.selectbox("Selecione o Produto", df['Produto'].unique())
-            qtd_s = st.number_input("Quantidade Saída", min_value=1)
-            if st.button("Confirmar Baixa"):
-                idx = df[df['Produto'] == prod_sel].index
-                if df.loc[idx, 'Quantidade'].values >= qtd_s:
-                    df.loc[idx, 'Quantidade'] -= qtd_s
-                    conn.update(spreadsheet=URL_PLANILHA, worksheet="Sheet1", data=df)
-                    registrar_historico("SAÍDA", prod_sel, qtd_s)
-                    st.warning("Saída registrada!")
-                    st.rerun()
-                else: st.error("Estoque insuficiente!")
-
-    elif menu == "Editar/Excluir":
-        prod_edit = st.selectbox("Selecione o Produto", df['Produto'].unique())
+elif menu == "Editar/Excluir":
+    st.subheader("🛠️ Gerenciar Produtos")
+    if not df.empty:
+        busca_edit = st.text_input("🔍 Filtrar produto para editar...").upper()
+        prod_opcoes = df['Produto'].unique()
+        if busca_edit:
+            prod_opcoes = [p for p in prod_opcoes if busca_edit in p]
+            
+        prod_edit = st.selectbox("Selecione o Produto", prod_opcoes)
         dados_prod = df[df['Produto'] == prod_edit]
+        
         if not dados_prod.empty:
+            valor_qtd = int(dados_prod['Quantidade'].values)
             col1, col2 = st.columns(2)
             with col1:
-                novo_n = st.text_input("Novo Nome", value=prod_edit)
-                nova_q = st.number_input("Nova Qtd", value=int(dados_prod['Quantidade'].values[0]))
+                novo_nome = st.text_input("Novo Nome", value=prod_edit)
+                nova_qtd = st.number_input("Nova Quantidade", value=valor_qtd)
                 if st.button("Salvar Edição"):
-                    df.loc[df['Produto'] == prod_edit, ['Produto', 'Quantidade']] = [novo_n.upper(), nova_q]
-                    conn.update(spreadsheet=URL_PLANILHA, worksheet="Sheet1", data=df)
+                    idx = df[df['Produto'] == prod_edit].index
+                    df.loc[idx, ['Produto', 'Quantidade']] = [novo_nome.upper(), nova_qtd]
+                    conn.update(spreadsheet=URL_PLANILHA, data=df)
+                    st.success("Alterado!")
                     st.rerun()
             with col2:
                 if st.button("🗑️ EXCLUIR", type="primary"):
                     df = df[df['Produto'] != prod_edit]
-                    conn.update(spreadsheet=URL_PLANILHA, worksheet="Sheet1", data=df)
+                    conn.update(spreadsheet=URL_PLANILHA, data=df)
+                    st.error(f"{prod_edit} removido.")
                     st.rerun()
 
-    elif menu == "Histórico":
-        st.dataframe(carregar_dados("Historico").sort_index(ascending=False), use_container_width=True)
-
-    elif menu == "Relatório de Compras":
-        df_compras = df[df['Quantidade'] < 50]
-        st.dataframe(df_compras[['SKU', 'Produto', 'Quantidade']], use_container_width=True)
-        st.download_button("Baixar Lista CSV", df_compras.to_csv(index=False), "compras.csv")
-
-except Exception as e:
-    st.error(f"Erro de Conexão: {e}")
-    st.info("Dica: Verifique se a aba principal se chama 'Sheet1' e se o link no Google está como 'Editor'.")
+elif menu == "Histórico":
+    st.subheader("📅 Log de Atividades")
+    try:
+        df_h = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
+        st.dataframe(df_h.sort_index(ascending=False), use_container_width=True)
+    except:
+        st.error("Aba 'Historico' necessária.")
