@@ -1,87 +1,102 @@
 import streamlit as st
 import pandas as pd
 from streamlit_gsheets import GSheetsConnection
+from datetime import datetime
 
-# Configuração da página
 st.set_page_config(page_title="Estoque Nuvem Pro", layout="wide")
 
-# Conexão com Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
+URL_PLANILHA = "https://google.com"
 
 def carregar_dados():
-    url = "https://docs.google.com/spreadsheets/d/1lJFMSmzV213au5Xw4qtnxX3LjeEmQ9dJbVWtqAexnlo/edit?gid=0#gid=0"
-    return conn.read(spreadsheet=url, ttl="0")
+    return conn.read(spreadsheet=URL_PLANILHA, ttl="0")
+
+def registrar_historico(acao, produto, qtd):
+    try:
+        # Carrega a aba de histórico
+        df_hist = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
+        nova_venda = pd.DataFrame([[datetime.now().strftime("%d/%m/%Y %H:%M"), acao, produto, qtd]], 
+                                  columns=['Data/Hora', 'Ação', 'Produto', 'Quantidade'])
+        df_hist_atualizado = pd.concat([df_hist, nova_venda], ignore_index=True)
+        conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_hist_atualizado)
+    except:
+        st.error("Erro ao gravar histórico. Verifique se existe a aba 'Historico'.")
 
 # --- LOGIN ---
 if 'logado' not in st.session_state:
     st.session_state.logado = False
 
 if not st.session_state.logado:
-    st.title("🔐 Login Administrativo")
+    st.title("🔐 Login")
     user = st.text_input("Usuário")
     senha = st.text_input("Senha", type="password")
     if st.button("Entrar"):
         if user == "admin" and senha == "1234":
             st.session_state.logado = True
             st.rerun()
-        else:
-            st.error("Usuário ou senha incorretos")
     st.stop()
 
 # --- SISTEMA ---
 df = carregar_dados()
-url_planilha = "https://google.com"
+st.title("📦 Gestão de Estoque Completa")
 
-st.title("📦 Controle de Estoque Online")
-
-menu = st.sidebar.selectbox("Menu", ["Ver Estoque", "Entrada", "Saída"])
+menu = st.sidebar.selectbox("Menu", ["Ver Estoque", "Entrada", "Saída", "Editar/Excluir", "Histórico"])
 
 if menu == "Ver Estoque":
-    st.subheader("📋 Inventário em Tempo Real")
-    if not df.empty:
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("A planilha está vazia ou não foi encontrada.")
+    st.subheader("📋 Inventário Atual")
+    st.dataframe(df, use_container_width=True)
 
 elif menu == "Entrada":
-    st.subheader("➕ Registrar Nova Entrada")
-    with st.form("form_entrada"):
-        nome = st.text_input("Nome do Produto").upper()
-        qtd = st.number_input("Quantidade", min_value=1, step=1)
-        valor = st.number_input("Valor Unitário", min_value=0.0, format="%.2f")
-        nf = st.text_input("Número da NF")
-        btn_salvar = st.form_submit_button("Salvar na Planilha")
-        
-        if btn_salvar:
-            if nome != "":
-                # Criar nova linha
-                novo_sku = f"PROD-{len(df) + 1:03d}"
-                nova_linha = pd.DataFrame([[novo_sku, nome, qtd, valor, nf]], columns=df.columns)
-                df_atualizado = pd.concat([df, nova_linha], ignore_index=True)
-                
-                # Atualizar Google Sheets
-                conn.update(spreadsheet=url_planilha, data=df_atualizado)
-                st.success(f"Sucesso! {nome} foi adicionado.")
-                st.balloons()
+    with st.form("entrada"):
+        nome = st.text_input("Produto").upper()
+        qtd = st.number_input("Quantidade", min_value=1)
+        btn = st.form_submit_button("Salvar")
+        if btn:
+            idx = df[df['Produto'] == nome].index
+            if not idx.empty:
+                df.loc[idx, 'Quantidade'] += qtd
             else:
-                st.error("Por favor, digite o nome do produto.")
+                novo = pd.DataFrame([{"SKU": f"PROD-{len(df)+1:03d}", "Produto": nome, "Quantidade": qtd, "Valor Unit": 0, "NF": "-"}])
+                df = pd.concat([df, novo], ignore_index=True)
+            conn.update(spreadsheet=URL_PLANILHA, data=df)
+            registrar_historico("ENTRADA", nome, qtd)
+            st.success("Estoque Atualizado!")
 
 elif menu == "Saída":
-    st.subheader("➖ Registrar Saída")
-    if not df.empty:
-        produto_sel = st.selectbox("Selecione o Produto", df['Produto'].unique())
-        qtd_saida = st.number_input("Quantidade de Saída", min_value=1, step=1)
-        
-        if st.button("Confirmar Baixa"):
-            # Encontrar índice do produto
-            idx = df[df['Produto'] == produto_sel].index
-            if df.loc[idx, 'Quantidade'].values[0] >= qtd_saida:
-                df.loc[idx, 'Quantidade'] -= qtd_saida
-                
-                # Atualizar Google Sheets
-                conn.update(spreadsheet=url_planilha, data=df)
-                st.warning(f"Saída de {qtd_saida} unidades de {produto_sel} realizada!")
-            else:
-                st.error("Erro: Estoque insuficiente para essa saída.")
-    else:
-        st.error("Não há produtos cadastrados para dar saída.")
+    produto_sel = st.selectbox("Produto", df['Produto'].unique())
+    qtd_s = st.number_input("Quantidade Saída", min_value=1)
+    if st.button("Confirmar Baixa"):
+        idx = df[df['Produto'] == produto_sel].index
+        if df.loc[idx, 'Quantidade'].values >= qtd_s:
+            df.loc[idx, 'Quantidade'] -= qtd_s
+            conn.update(spreadsheet=URL_PLANILHA, data=df)
+            registrar_historico("SAÍDA", produto_sel, qtd_s)
+            st.warning("Saída registrada!")
+
+elif menu == "Editar/Excluir":
+    st.subheader("🛠️ Gerenciar Produtos")
+    prod_edit = st.selectbox("Selecione o Produto", df['Produto'].unique())
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        novo_nome = st.text_input("Novo Nome", value=prod_edit)
+        nova_qtd = st.number_input("Nova Quantidade", value=int(df[df['Produto']==prod_edit]['Quantidade'].values[0]))
+        if st.button("Salvar Edição"):
+            idx = df[df['Produto'] == prod_edit].index
+            df.loc[idx, ['Produto', 'Quantidade']] = [novo_nome.upper(), nova_qtd]
+            conn.update(spreadsheet=URL_PLANILHA, data=df)
+            st.success("Alterado com sucesso!")
+            st.rerun()
+
+    with col2:
+        st.write("Cuidado: Esta ação é definitiva.")
+        if st.button("🗑️ EXCLUIR PRODUTO", fg_color="red"):
+            df = df[df['Produto'] != prod_edit]
+            conn.update(spreadsheet=URL_PLANILHA, data=df)
+            st.error(f"{prod_edit} foi removido do sistema.")
+            st.rerun()
+
+elif menu == "Histórico":
+    st.subheader("📅 Log de Atividades")
+    df_h = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl="0")
+    st.table(df_h.tail(20)) # Mostra as últimas 20 ações
